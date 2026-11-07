@@ -1,0 +1,148 @@
+# ============================================================
+# 自动同步 Fork 仓库 - GitHub Actions 工作流
+# ============================================================
+#
+# 【复用指南 - 其它项目需要修改的参数】
+#
+# 1. UPSTREAM_REPO（上游仓库地址）
+#    → 改为你要同步的源仓库 URL
+#
+# 2. UPSTREAM_BRANCH（上游分支名）
+#    → 改为上游仓库的默认分支名（如 master / main）
+#
+# 3. CURRENT_BRANCH（本仓库分支名）
+#    → 改为你本仓库的默认分支名（如 master / main）
+#
+# 4. cron 表达式（定时触发时间）
+#    → GitHub cron 使用 UTC 时间，按需换算时区
+#    → 格式：分 时 日 月 星期
+#
+# 5. 如果上下游分支不同：
+#    → 分别修改 UPSTREAM_BRANCH 和 CURRENT_BRANCH 即可
+#    → 例：上游是 main，本地是 master
+#       UPSTREAM_BRANCH="main"
+#       CURRENT_BRANCH="master"
+#    → 合并命令中会自动用正确的分支名
+# ============================================================
+
+name: Sync Fork from Upstream
+
+on:
+  schedule:
+    # ★ 修改点4：定时触发时间
+    # cron 使用 UTC 时间。上海时间(UTC+8) 8:10 = UTC 0:10
+    # 格式：'分 时 日 月 星期几'
+    # 当前设置：每天 UTC 0:10 = 北京时间 8:10
+    - cron: '10 0 * * *'
+
+  # 允许在 GitHub 网页上手动点击触发
+  workflow_dispatch:
+
+# ============================================================
+# 环境变量 - 其它项目主要改这里
+# ============================================================
+env:
+  # ★ 修改点1：上游仓库的 HTTPS 地址（你 fork 的源仓库）
+  UPSTREAM_REPO: "https://github.com/buhanzhe/NativeWasmTv.git"
+
+  # ★ 修改点2：上游仓库的默认分支名
+  UPSTREAM_BRANCH: "master"
+
+  # ★ 修改点3：本仓库（你的 fork）的默认分支名
+  CURRENT_BRANCH: "master"
+
+jobs:
+  sync:
+    name: Sync fork from upstream
+    runs-on: ubuntu-latest
+
+    # 权限设置：需要写入权限来推送代码
+    permissions:
+      contents: write
+
+    steps:
+      # ----------------------------------------------------------
+      # 步骤1：检出本仓库代码（完整历史，以便合并）
+      # ----------------------------------------------------------
+      - name: Checkout current repository
+        uses: actions/checkout@v4
+        with:
+          # fetch-depth: 0 表示拉取完整 git 历史
+          # 同步操作需要完整历史，不能浅克隆
+          fetch-depth: 0
+          # 使用 GITHUB_TOKEN 认证，推送到本仓库
+          token: ${{ secrets.GITHUB_TOKEN }}
+
+      # ----------------------------------------------------------
+      # 步骤2：配置 Git 用户信息（提交需要）
+      # ----------------------------------------------------------
+      - name: Configure Git
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+
+      # ----------------------------------------------------------
+      # 步骤3：添加上游远程仓库并拉取最新代码
+      # ----------------------------------------------------------
+      - name: Add upstream and fetch
+        run: |
+          echo "===== 添加上游远程仓库 ====="
+          echo "上游地址: ${{ env.UPSTREAM_REPO }}"
+
+          # 添加上游远程仓库，命名为 upstream
+          git remote add upstream "${{ env.UPSTREAM_REPO }}" 2>/dev/null || true
+
+          # 从上游仓库拉取所有分支
+          git fetch upstream
+
+          echo "===== 上游分支列表 ====="
+          git branch -r | grep upstream
+
+      # ----------------------------------------------------------
+      # 步骤4：切换到本仓库分支并合并上游变更
+      # ----------------------------------------------------------
+      - name: Merge upstream changes
+        run: |
+          echo "===== 切换到本仓库分支: ${{ env.CURRENT_BRANCH }} ====="
+          git checkout "${{ env.CURRENT_BRANCH }}"
+
+          echo "===== 合并上游分支: upstream/${{ env.UPSTREAM_BRANCH }} ====="
+          # 尝试合并上游分支到本地分支
+          # --no-edit 使用默认合并信息
+          # 如果上下游分支名不同，这里会自动用各自正确的分支名
+          git merge "upstream/${{ env.UPSTREAM_BRANCH }}" \
+            --no-edit \
+            -m "Auto sync: merge upstream/${{ env.UPSTREAM_BRANCH }} into ${{ env.CURRENT_BRANCH }}"
+
+          # 如果合并失败（有冲突），则中止并报错
+          # 你可以选择改为强制覆盖（见下方注释）
+          if [ $? -ne 0 ]; then
+            echo "❌ 合并冲突！请手动解决冲突。"
+            echo "如需强制同步（丢弃本地修改），可改用以下命令："
+            echo "  git reset --hard upstream/\${{ env.UPSTREAM_BRANCH }}"
+            exit 1
+          fi
+
+          echo "✅ 合并成功"
+
+      # ----------------------------------------------------------
+      # 步骤5：推送同步后的代码到本仓库（你的 fork）
+      # ----------------------------------------------------------
+      - name: Push to fork
+        run: |
+          echo "===== 推送到本仓库 origin/${{ env.CURRENT_BRANCH }} ====="
+          git push origin "${{ env.CURRENT_BRANCH }}"
+          echo "✅ 同步完成！"
+
+      # ============================================================
+      # 【可选】如果你希望强制覆盖本地（丢弃所有本地修改，完全与上游一致）
+      # 将步骤4和步骤5替换为以下内容：
+      #
+      # - name: Force sync (overwrite local)
+      #   run: |
+      #     git checkout "${{ env.CURRENT_BRANCH }}"
+      #     git reset --hard "upstream/${{ env.UPSTREAM_BRANCH }}"
+      #     git push origin "${{ env.CURRENT_BRANCH }}" --force
+      #
+      # ⚠️ 警告：这会丢弃你在 fork 上的所有本地提交！
+      # ============================================================
