@@ -65,7 +65,7 @@ jobs:
       # 步骤1：检出本仓库代码（完整历史，以便合并）
       # ----------------------------------------------------------
       - name: Checkout current repository
-        uses: actions/checkout@v4
+        uses: actions/checkout@v5   # 从v4改成v5，消除Node废弃警告
         with:
           # fetch-depth: 0 表示拉取完整 git 历史
           # 同步操作需要完整历史，不能浅克隆
