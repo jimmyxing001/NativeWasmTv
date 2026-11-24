@@ -45,7 +45,7 @@ if (embeddedUjsChecks) {
 }
 def configuredTargetSdk = 25
 def configuredVersionCode = project.hasProperty('versionCodeOverride')
-        ? Integer.parseInt(project.property('versionCodeOverride').toString()) : 11
+        ? Integer.parseInt(project.property('versionCodeOverride').toString()) : 12
 if (releaseSigningAvailable) {
     releaseSigningInfo.withInputStream { releaseSigningProperties.load(it) }
     ['alias', 'storePassword', 'keyPassword'].each { propertyName ->
@@ -241,6 +241,9 @@ android {
             }
             if (project.findProperty('testRunner') == 'xiao.bu.tv.CjsV5Instrumentation') {
                 proguardFile 'proguard-cjs-test.pro'
+            }
+            if (project.findProperty('testRunner') == 'xiao.bu.tv.TvBoxProtocolInstrumentation') {
+                proguardFile 'proguard-tvbox-test.pro'
             }
         }
     }
