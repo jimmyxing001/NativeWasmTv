@@ -9741,7 +9741,7 @@ public final class MainActivity extends Activity implements TvUiPlugin.Listener,
             mediaTrackManifest = proxy == null ? null : proxy.mediaTracks(streamUrl);
             scheduleVideoInfoRefresh();
             if (audioOnlyPlayback) {
-                audioArtwork.show(channelCardTitle(channel.name), mediaPlayer.getDuration() <= 0,
+                audioArtwork.show(playbackArtworkTitle(channel), mediaPlayer.getDuration() <= 0,
                         initialArtwork[0]);
                 audioArtwork.setPlaying(true);
                 playbackReadyRequestId = sourceRequestId;
@@ -10139,7 +10139,7 @@ public final class MainActivity extends Activity implements TvUiPlugin.Listener,
                 && mediaPath.toLowerCase(Locale.US).endsWith(".mp4"))
             nextPlayer.setOption(IjkMediaPlayer.OPT_CATEGORY_PLAYER, "enable-accurate-seek", 1);
         final boolean sniffedPresentation = playingDiscoveredWebStream && playingSniffedResource != null;
-        final String artworkTitle = channelCardTitle(channel.name);
+        final String artworkTitle = playbackArtworkTitle(channel);
         final String artworkLogo = sniffedPresentation ? "" : channel.logoUrl;
         final boolean receivingCast=channel==multimediaReceiverChannel && isRtspSource(streamUrl);
         final boolean radioChannel = !receivingCast && !sniffedPresentation
@@ -14392,6 +14392,11 @@ public final class MainActivity extends Activity implements TvUiPlugin.Listener,
                 || !visible && activePlayerChannel != null && displayedChannel.equals(activePlayerChannel.name);
     }
 
+    private String playbackArtworkTitle(Channel channel) {
+        String title = jarChannelRuntime == null ? "" : jarChannelRuntime.vodTitle();
+        return title.isEmpty() ? channelCardTitle(channel.name) : title;
+    }
+
     private String channelCardTitle(String requestedTitle) {
         // Playback callbacks retain the catalog entry for navigation/persistence.
         // Present the captured page instead, even after its WebView is drained.
@@ -14475,6 +14480,13 @@ public final class MainActivity extends Activity implements TvUiPlugin.Listener,
     }
 
     private void showChannelCard() {
+        if (jarChannelRuntime != null && (jarChannelRuntime.playingVod()
+                || jarChannelRuntime.blocksHostChannelClick())) {
+            channelCardDeferredForArtwork = false;
+            channelBar.removeCallbacks(hideChannelBar);
+            channelBar.setVisibility(View.GONE);
+            return;
+        }
         applyTvUiCardTheme();
         refreshTvUiCard();
         if (receivingRtspCast()) {
@@ -15038,9 +15050,17 @@ public final class MainActivity extends Activity implements TvUiPlugin.Listener,
                 public boolean playing() { return prepared && player != null && player.isPlaying(); }
                 public String title() { if(jarChannelRuntime!=null&&!jarChannelRuntime.vodTitle().isEmpty())return jarChannelRuntime.vodTitle();return catchupProgram==null?currentChannel().name:"回看 · "+currentChannel().name+" · "+catchupProgram.title; }
                 public boolean hasEpisodes(){return jarChannelRuntime!=null&&jarChannelRuntime.playingVod();}
-                public void episodes(){if(jarChannelRuntime!=null&&jarChannelRuntime.resumeFromVod()){videoControlsOverlay.hide();cancelChannelManifest();releasePlayer();hideLoading();}}
+                public void episodes() {
+                    if (jarChannelRuntime == null || jarChannelRuntime.showVodEpisodes()) return;
+                    if (jarChannelRuntime.resumeFromVod()) {
+                        cancelChannelManifest();
+                        releasePlayer();
+                        hideLoading();
+                    }
+                }
                 public String quality(){return prepared&&player!=null&&player.getVideoHeight()>0?player.getVideoWidth()+"×"+player.getVideoHeight():"";}
                 public JSONArray trackOptions(){return playbackTrackOptions();}
+                public boolean hasTracks(){return prepared && player instanceof IjkMediaPlayer;}
                 public void selectTrack(String id){selectPlaybackTrack(id);}
                 public boolean catchup(){return catchupProgram!=null;}
                 public void live(){returnToLive();}
@@ -15067,23 +15087,38 @@ public final class MainActivity extends Activity implements TvUiPlugin.Listener,
     }
 
     private JSONArray playbackTrackOptions() {
-        JSONArray options=new JSONArray();
-        if(!prepared||!(player instanceof IjkMediaPlayer))return options;
-        IjkMediaPlayer ijk=(IjkMediaPlayer)player;
+        JSONArray options = new JSONArray();
+        if (!prepared || !(player instanceof IjkMediaPlayer)) return options;
+        IjkMediaPlayer ijk = (IjkMediaPlayer) player;
         try {
-            ITrackInfo[] info=ijk.getTrackInfo();
-            if(info!=null)for(int i=0;i<info.length;i++) {
-                if(info[i]==null)continue;
-                int type=info[i].getTrackType();
-                boolean audio=type==ITrackInfo.MEDIA_TRACK_TYPE_AUDIO;
-                if(!audio&&type!=ITrackInfo.MEDIA_TRACK_TYPE_SUBTITLE&&type!=ITrackInfo.MEDIA_TRACK_TYPE_TIMEDTEXT)continue;
-                options.put(new JSONObject().put("id",(audio?"a:":"s:")+i)
-                        .put("label",(audio?"音轨 · ":"字幕 · ")+info[i].getInfoInline())
-                        .put("selected",ijk.getSelectedTrack(type)==i));
+            ITrackInfo[] info = ijk.getTrackInfo();
+            int audioCount = 0, subtitleCount = 0;
+            if (info != null) for (int i = 0; i < info.length; i++) {
+                ITrackInfo track = info[i];
+                if (track == null) continue;
+                int type = track.getTrackType();
+                boolean audio = type == ITrackInfo.MEDIA_TRACK_TYPE_AUDIO;
+                if (!audio && type != ITrackInfo.MEDIA_TRACK_TYPE_SUBTITLE
+                        && type != ITrackInfo.MEDIA_TRACK_TYPE_TIMEDTEXT) continue;
+                String label = audio ? "音轨 " + (++audioCount) : "字幕 " + (++subtitleCount);
+                String language = normalizeTrackLanguage(track.getLanguage());
+                if (!language.isEmpty() && !"N/A".equalsIgnoreCase(language)) label += " · " + language;
+                tv.danmaku.ijk.media.player.misc.IMediaFormat format = track.getFormat();
+                if (audio && format != null) {
+                    String codec = format.getString(IjkMediaMeta.IJKM_KEY_CODEC_NAME);
+                    if (!TextUtils.isEmpty(codec) && !"N/A".equalsIgnoreCase(codec)) {
+                        label += " · " + codec.toUpperCase(Locale.ROOT);
+                    }
+                }
+                options.put(new JSONObject().put("id", (audio ? "a:" : "s:") + i)
+                        .put("label", label).put("selected", ijk.getSelectedTrack(type) == i));
             }
-            options.put(new JSONObject().put("id","s:-1").put("label","关闭内嵌字幕")
-                    .put("selected",ijk.getSelectedTrack(ITrackInfo.MEDIA_TRACK_TYPE_SUBTITLE)<0&&ijk.getSelectedTrack(ITrackInfo.MEDIA_TRACK_TYPE_TIMEDTEXT)<0));
-        } catch(Exception error){AppLog.w(TAG,"Unable to read playback track options",error);}
+            options.put(new JSONObject().put("id", "s:-1").put("label", "关闭内嵌字幕")
+                    .put("selected", ijk.getSelectedTrack(ITrackInfo.MEDIA_TRACK_TYPE_SUBTITLE) < 0
+                            && ijk.getSelectedTrack(ITrackInfo.MEDIA_TRACK_TYPE_TIMEDTEXT) < 0));
+        } catch (Exception error) {
+            AppLog.w(TAG, "Unable to read playback track options", error);
+        }
         return options;
     }
     private void selectPlaybackTrack(String id) {
@@ -17048,7 +17083,7 @@ public final class MainActivity extends Activity implements TvUiPlugin.Listener,
                 || !(audioOnlyPlayback || isAudioArtworkChannel(channel, currentSourceIndex))) return false;
         audioArtwork.setPlaying(false);
         audioArtwork.setCover(null);
-        audioArtwork.show(channelCardTitle(channel.name), true, null);
+        audioArtwork.show(playbackArtworkTitle(channel), true, null);
         return true;
     }
 
@@ -17477,6 +17512,19 @@ public final class MainActivity extends Activity implements TvUiPlugin.Listener,
             return super.dispatchKeyEvent(event);
         }
         if(tvUiMenu.dispatchKeyEvent(event))return true;
+        int rawKeyCode = event.getKeyCode();
+        int keyCode = normalizeRemoteKeyCode(rawKeyCode);
+        if (jarPageOwnsInput() && (keyCode == KeyEvent.KEYCODE_DPAD_UP
+                || keyCode == KeyEvent.KEYCODE_DPAD_DOWN || keyCode == KeyEvent.KEYCODE_DPAD_LEFT
+                || keyCode == KeyEvent.KEYCODE_DPAD_RIGHT || keyCode == KeyEvent.KEYCODE_DPAD_CENTER
+                || keyCode == KeyEvent.KEYCODE_ENTER)) {
+            if(event.getAction()==KeyEvent.ACTION_DOWN)setRemoteInputMode(true);
+            KeyEvent nativeEvent = rawKeyCode == keyCode ? event : new KeyEvent(event.getDownTime(),
+                    event.getEventTime(),event.getAction(),keyCode,event.getRepeatCount(),event.getMetaState(),
+                    event.getDeviceId(),event.getScanCode(),event.getFlags(),event.getSource());
+            jarChannelRuntime.dispatchKey(nativeEvent);
+            return true;
+        }
         if(jarChannelRuntime!=null&&jarChannelRuntime.dispatchMedia(event))return true;
         if (event.getKeyCode() == KeyEvent.KEYCODE_MEDIA_PREVIOUS
                 || event.getKeyCode() == KeyEvent.KEYCODE_MEDIA_NEXT) {
@@ -17486,21 +17534,20 @@ public final class MainActivity extends Activity implements TvUiPlugin.Listener,
             return true;
         }
 
-        int rawKeyCode = event.getKeyCode();
-        int keyCode = normalizeRemoteKeyCode(rawKeyCode);
-        if (jarChannelRuntime != null && jarChannelRuntime.visible()
-                && backPrompt.getVisibility() != View.VISIBLE
-                && managementPanel.getVisibility() != View.VISIBLE
-                && channelListPanel.getVisibility() != View.VISIBLE
-                && (keyCode == KeyEvent.KEYCODE_DPAD_UP || keyCode == KeyEvent.KEYCODE_DPAD_DOWN
-                    || keyCode == KeyEvent.KEYCODE_DPAD_LEFT || keyCode == KeyEvent.KEYCODE_DPAD_RIGHT
-                    || keyCode == KeyEvent.KEYCODE_DPAD_CENTER || keyCode == KeyEvent.KEYCODE_ENTER)) {
-            jarChannelRuntime.dispatchKey(event);
-            return true;
-        }
         if(liteWebPlayback!=null&&liteWebPlayback.isRendering()
                 && backPrompt.getVisibility()!=View.VISIBLE && managementPanel.getVisibility()!=View.VISIBLE
                 && channelListPanel.getVisibility()!=View.VISIBLE && liteWebPlayback.handleKey(event))return true;
+        boolean pluginVodNavigation=jarChannelRuntime!=null&&jarChannelRuntime.playingVod()
+                &&!audioOnlyPlayback&&seekableDuration()>0L&&managementPanel.getVisibility()!=View.VISIBLE
+                &&backPrompt.getVisibility()!=View.VISIBLE&&channelListPanel.getVisibility()!=View.VISIBLE;
+        boolean confirmOrVertical=keyCode==KeyEvent.KEYCODE_DPAD_CENTER||keyCode==KeyEvent.KEYCODE_ENTER
+                ||keyCode==KeyEvent.KEYCODE_DPAD_UP||keyCode==KeyEvent.KEYCODE_DPAD_DOWN;
+        if(pluginVodNavigation&&confirmOrVertical){
+            if(videoControlsOverlay==null||!videoControlsOverlay.visible()){
+                if(event.getAction()==KeyEvent.ACTION_DOWN&&event.getRepeatCount()==0){showVideoControls();if(videoControlsOverlay!=null)videoControlsOverlay.showForRemote(keyCode);}
+            }else videoControlsOverlay.remoteKey(event,keyCode);
+            return true;
+        }
         boolean seekKey = keyCode == KeyEvent.KEYCODE_DPAD_LEFT || keyCode == KeyEvent.KEYCODE_DPAD_RIGHT
                 || keyCode == KeyEvent.KEYCODE_MEDIA_REWIND || keyCode == KeyEvent.KEYCODE_MEDIA_FAST_FORWARD;
         if (seekKey && managementPanel.getVisibility() != View.VISIBLE

@@ -113,8 +113,8 @@ final class JarChannelRuntime {
                             }
                             public void playVod(String url, JSONObject headers) { playVod(url,headers,""); }
                             public void playVod(String url, JSONObject headers, String title) {
-                                vodTitle=title==null?"":title;
                                 if(token!=generation||!callback.current()||view==null) return;
+                                vodTitle=title==null?"":title.trim();
                                 playingVod=true;
                                 view.setVisibility(View.GONE);
                                 hideHostVideo(false);
@@ -205,6 +205,14 @@ final class JarChannelRuntime {
     }
     boolean playingVod() { return playingVod && view != null; }
     String vodTitle() { return playingVod ? vodTitle : ""; }
+    boolean showVodEpisodes() {
+        if (!playingVod() || !(plugin instanceof ChannelPlugin.NativePage)) return false;
+        try {
+            return ((ChannelPlugin.NativePage) plugin).showEpisodes();
+        } catch (LinkageError oldPlugin) {
+            return false;
+        }
+    }
     boolean resumeFromVod() {
         if (!playingVod || view==null) return false;
         playingVod=false;
